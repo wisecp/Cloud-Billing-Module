@@ -4,6 +4,7 @@
         function __construct(){
             $this->_name = __CLASS__;
             parent::__construct();
+            Helper::Load(["Invoices","Notification"]);
         }
 
         public function create_error($error='',$invoice_id = 0)
@@ -56,6 +57,8 @@
                 $this->error = $response['error_message'] ?? 'Unknown Error';
                 $response = false;
             }
+
+            Modules::save_log("Addons",__CLASS__,$endpoint,$data,$response,$this->error);
 
             return $response;
         }
@@ -301,6 +304,15 @@
 
         public function cronjob()
         {
+            // Auto Formalize
+            $this->cronjob_formalize();
+
+            // Auto Define Invoice Document File
+            $this->cronjob_define_doc_file();
+        }
+
+        public function cronjob_formalize()
+        {
             $day            = 3; // Bring in invoices exceeding 3 days
             $past_day       = 30; // maximum how many days past invoices should be brought
             $time           = DateManager::Now();
@@ -323,6 +335,49 @@
                     $this->formalized($invoice);
                 }
             }
+        }
+
+        public function cronjob_define_doc_file()
+        {
+            $invoices       = WDB::select("id")->from("invoices");
+            $invoices->where("taxed","=","1","AND");
+            $invoices->where("(");
+            $invoices->where("taxed_file","=","","OR");
+            $invoices->where("taxed_file","IS NULL","","");
+            $invoices->where(")");
+            $invoices       = $invoices->build() ? $invoices->fetch_object() : false;
+
+            if($invoices)
+            {
+                foreach($invoices AS $inv)
+                {
+                    $invoice_id = $inv->id;
+                    $exists      = $this->use_curl('get-invoice-data',['number' => $invoice_id]);
+                    if($exists && isset($exists["pdf_data"]) && strlen($exists["pdf_data"]) > 0)
+                    {
+                        $doc_file        = base64_decode($exists["pdf_data"]);
+                        $random_name     = md5(time()).".pdf";
+                        $file            = ROOT_DIR.RESOURCE_DIR."uploads".DS."invoices".DS.$random_name;
+
+                        FileManager::file_write($file,$doc_file);
+
+                        Invoices::set($invoice_id,[
+                            'taxed_file'    => Utility::jencode([
+                                'size'      => filesize($file),
+                                'file_name' => $random_name,
+                                'name'      => $random_name,
+                                'file_path' => $random_name,
+                            ])
+                        ]);
+
+                        Notification::invoice_has_been_taxed($invoice_id);
+
+                    }
+                }
+            }
+
+
+
         }
     }
 
